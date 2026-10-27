@@ -1,3 +1,5 @@
+import { syncProgressToBackend } from './auth'
+
 const PREFIX = 'forgelearn-progress:'
 const NAME_KEY = 'forgelearn-learner-name'
 
@@ -30,6 +32,7 @@ export function getProgress(courseId: string): Progress {
 
 export function saveProgress(courseId: string, progress: Progress) {
   localStorage.setItem(key(courseId), JSON.stringify(progress))
+  syncProgressToBackend(progress.completed)
 }
 
 export function toggleLesson(courseId: string, lessonId: string, done: boolean) {
@@ -45,3 +48,4 @@ export function toggleLesson(courseId: string, lessonId: string, done: boolean) 
 export function resetProgress(courseId: string) {
   saveProgress(courseId, { completed: [] })
 }
+

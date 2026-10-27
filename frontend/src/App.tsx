@@ -2,7 +2,12 @@ import { useEffect, useState } from 'react'
 import { courses, getAllLessons, getCourse, courseHoursFromModules, formatDuration } from './data/courses'
 import type { Course, Module } from './data/courses'
 import { downloadCertificate } from './lib/certificate'
-import { getLearnerName, getProgress, resetProgress, setLearnerName, toggleLesson } from './lib/progress'
+import { getLearnerName, getProgress, resetProgress, setLearnerName, toggleLesson, saveProgress } from './lib/progress'
+import { getStoredUser, fetchCurrentUser, clearAuth } from './lib/auth'
+import type { AuthUser } from './lib/auth'
+import AuthModal from './components/AuthModal'
+import QuizView from './components/QuizView'
+import CodingWorkbench from './components/CodingWorkbench'
 
 function useHash() {
   const [hash, setHash] = useState(() => window.location.hash.slice(1) || '/')
@@ -23,10 +28,53 @@ function go(path: string) {
 export default function App() {
   const hash = useHash()
   const route = parseRoute(hash)
+  const [user, setUser] = useState<AuthUser | null>(() => getStoredUser())
+  const [isAuthOpen, setIsAuthOpen] = useState(false)
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login')
+
+  useEffect(() => {
+    // Try fetching fresh user profile from backend
+    fetchCurrentUser().then((u) => {
+      if (u) {
+        setUser(u)
+        // If user has saved progress in Mongo, merge with local
+        if (u.progress && u.progress.length > 0) {
+          const local = getProgress('mern')
+          const merged = Array.from(new Set([...local.completed, ...u.progress]))
+          saveProgress('mern', { completed: merged })
+        }
+      }
+    })
+  }, [])
+
+  const handleOpenAuth = (mode: 'login' | 'register') => {
+    setAuthMode(mode)
+    setIsAuthOpen(true)
+  }
+
+  const handleAuthSuccess = (authUser: AuthUser) => {
+    setUser(authUser)
+    if (authUser.progress && authUser.progress.length > 0) {
+      const local = getProgress('mern')
+      const merged = Array.from(new Set([...local.completed, ...authUser.progress]))
+      saveProgress('mern', { completed: merged })
+    }
+  }
+
+  const handleLogout = () => {
+    clearAuth()
+    setUser(null)
+  }
 
   return (
     <div className="app">
-      <Header />
+      <Header
+        user={user}
+        onLogin={() => handleOpenAuth('login')}
+        onRegister={() => handleOpenAuth('register')}
+        onLogout={handleLogout}
+      />
+
       {route.name === 'home' && <Home />}
       {route.name === 'course' && <CoursePage courseId={route.courseId} />}
       {route.name === 'learn' && (
@@ -43,25 +91,65 @@ export default function App() {
           </div>
         </main>
       )}
+
+      <AuthModal
+        isOpen={isAuthOpen}
+        initialMode={authMode}
+        onClose={() => setIsAuthOpen(false)}
+        onSuccess={handleAuthSuccess}
+      />
+
       <footer className="site-footer">
         <span>ForgeLearn</span>
-        <span>Development courses. MERN path is open.</span>
+        <span>MERN Academy with Express Auth, MongoDB, Quizzes & Coding Challenges.</span>
       </footer>
     </div>
   )
 }
 
-function Header() {
+function Header({
+  user,
+  onLogin,
+  onRegister,
+  onLogout,
+}: {
+  user: AuthUser | null
+  onLogin: () => void
+  onRegister: () => void
+  onLogout: () => void
+}) {
   return (
     <header className="site-header">
-      <a className="brand" href="#/">
-        <span className="brand-mark">FL</span>
-        ForgeLearn
-      </a>
-      <nav>
+      <div className="header-left">
+        <a className="brand" href="#/">
+          <span className="brand-mark">FL</span>
+          ForgeLearn
+        </a>
+      </div>
+      <nav className="header-nav">
         <a href="#/">Catalog</a>
         <a href="#/course/mern">MERN Path</a>
       </nav>
+      <div className="header-auth">
+        {user ? (
+          <div className="user-profile-badge">
+            <span className="user-avatar">{user.name.charAt(0).toUpperCase()}</span>
+            <span className="user-name">{user.name}</span>
+            <button className="btn-sm ghost" onClick={onLogout}>
+              Logout
+            </button>
+          </div>
+        ) : (
+          <div className="auth-btns">
+            <button className="btn-sm ghost" onClick={onLogin}>
+              Sign In
+            </button>
+            <button className="btn-sm primary" onClick={onRegister}>
+              Register
+            </button>
+          </div>
+        )}
+      </div>
     </header>
   )
 }
@@ -73,14 +161,14 @@ function Home() {
         <p className="eyebrow">Development academy</p>
         <h1>Learn to ship full-stack products.</h1>
         <p className="lede">
-          Browse the catalog, complete the MERN Stack path (44+ hours), and download a PDF
-          certificate when every lesson is marked complete.
+          Browse the catalog, complete the MERN Stack path (54+ hours) with hands-on video lectures,
+          interleaved MCQ quizzes, and LeetCode-style coding challenges with instant validation.
         </p>
       </section>
       <section className="catalog">
         <div className="section-head">
           <h2>Courses</h2>
-          <p>One path is live. The rest open later.</p>
+          <p>MERN Path is open with auth and interactive challenges. The rest open later.</p>
         </div>
         <div className="course-grid">
           {courses.map((course) => (
@@ -173,14 +261,14 @@ function CoursePage({ courseId }: { courseId: string }) {
       <ul className="meta large">
         <li>{courseHoursFromModules(course)} hours</li>
         <li>{course.modules.length} modules</li>
-        <li>{lessons.length} lessons</li>
+        <li>{lessons.length} total units (Lectures, Quizzes & Code Challenges)</li>
         <li>{course.level}</li>
       </ul>
       <div className="progress-wrap">
         <div className="progress-label">
-          <span>Progress</span>
+          <span>Overall Path Progress</span>
           <span>
-            {done}/{lessons.length} lessons · {percent}%
+            {done}/{lessons.length} units completed · {percent}%
           </span>
         </div>
         <div className="bar">
@@ -190,7 +278,7 @@ function CoursePage({ courseId }: { courseId: string }) {
       <div className="row">
         {nextLesson && (
           <button className="btn primary" onClick={() => go(`/course/${course.id}/learn/${nextLesson.id}`)}>
-            {done === 0 ? 'Start course' : complete ? 'Review lessons' : 'Continue learning'}
+            {done === 0 ? 'Start course' : complete ? 'Review course units' : 'Continue learning'}
           </button>
         )}
         {complete && (
@@ -227,6 +315,12 @@ function CoursePage({ courseId }: { courseId: string }) {
   )
 }
 
+function getLessonBadge(type?: string) {
+  if (type === 'quiz') return { label: 'MCQ Quiz', icon: '📝', className: 'badge-quiz' }
+  if (type === 'challenge') return { label: 'LeetCode Problem', icon: '💻', className: 'badge-challenge' }
+  return { label: 'Lecture', icon: '🎬', className: 'badge-video' }
+}
+
 function ModuleBlock({
   course,
   module,
@@ -250,12 +344,13 @@ function ModuleBlock({
           <p>{module.description}</p>
         </div>
         <p className="module-meta">
-          {formatDuration(minutes)} · {done}/{module.lessons.length}
+          {formatDuration(minutes)} · {done}/{module.lessons.length} completed
         </p>
       </header>
       <ol>
         {module.lessons.map((lesson) => {
           const isDone = completed.includes(lesson.id)
+          const badge = getLessonBadge(lesson.type)
           return (
             <li key={lesson.id}>
               <button
@@ -264,7 +359,10 @@ function ModuleBlock({
               >
                 <span className="check">{isDone ? '✓' : ''}</span>
                 <span className="lesson-copy">
-                  <strong>{lesson.title}</strong>
+                  <div className="lesson-title-line">
+                    <span className={`type-tag ${badge.className}`}>{badge.icon} {badge.label}</span>
+                    <strong>{lesson.title}</strong>
+                  </div>
                   <em>{lesson.summary}</em>
                 </span>
                 <span className="mins">{formatDuration(lesson.durationMinutes)}</span>
@@ -313,6 +411,7 @@ function LearnPage({ courseId, lessonId }: { courseId: string; lessonId: string 
   const module = course.modules.find((item) => item.lessons.some((itemLesson) => itemLesson.id === lesson.id))
 
   function mark(done: boolean) {
+    if (!course) return
     const updated = toggleLesson(course.id, lesson.id, done)
     const finished = lessons.every((item) => updated.completed.includes(item.id))
     bump((n) => n + 1)
@@ -320,62 +419,94 @@ function LearnPage({ courseId, lessonId }: { courseId: string; lessonId: string 
     else if (done && finished) go(`/course/${course.id}/certificate`)
   }
 
+  const badge = getLessonBadge(lesson.type)
+
   return (
     <div className="learn-layout">
       <aside className="learn-sidebar">
         <a className="back-link" href={`#/course/${course.id}`}>
-          ← {course.title}
+          ← Back to course outline
         </a>
         {course.modules.map((item) => (
           <div key={item.id} className="side-module">
             <p>{item.title}</p>
-            {item.lessons.map((itemLesson) => (
-              <a
-                key={itemLesson.id}
-                href={`#/course/${course.id}/learn/${itemLesson.id}`}
-                className={[
-                  itemLesson.id === lesson.id ? 'current' : '',
-                  progress.completed.includes(itemLesson.id) ? 'done' : '',
-                ].join(' ')}
-              >
-                {itemLesson.title}
-              </a>
-            ))}
+            {item.lessons.map((itemLesson) => {
+              const itemBadge = getLessonBadge(itemLesson.type)
+              return (
+                <a
+                  key={itemLesson.id}
+                  href={`#/course/${course.id}/learn/${itemLesson.id}`}
+                  className={[
+                    itemLesson.id === lesson.id ? 'current' : '',
+                    progress.completed.includes(itemLesson.id) ? 'done' : '',
+                  ].join(' ')}
+                >
+                  <span className="side-icon">{itemBadge.icon}</span>
+                  <span className="side-text">{itemLesson.title}</span>
+                </a>
+              )
+            })}
           </div>
         ))}
       </aside>
+
       <main className="learn-main">
-        <p className="eyebrow">{module?.title}</p>
-        <h1>{lesson.title}</h1>
-        <p>{lesson.summary}</p>
-        <p className="muted">
-          Lesson {index + 1} of {lessons.length} · Estimated {formatDuration(lesson.durationMinutes)}
-        </p>
-        <div className="player">
-          <iframe
-            title={lesson.title}
-            src={`https://www.youtube.com/embed/${lesson.youtubeId}`}
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
-            allowFullScreen
-          />
+        <div className="learn-header-row">
+          <div>
+            <div className="learn-badges">
+              <span className={`type-tag ${badge.className}`}>{badge.icon} {badge.label}</span>
+              <span className="eyebrow module-sub">{module?.title}</span>
+            </div>
+            <h1>{lesson.title}</h1>
+            <p className="lesson-desc">{lesson.summary}</p>
+            <p className="muted">
+              Unit {index + 1} of {lessons.length} · Est. {formatDuration(lesson.durationMinutes)}
+            </p>
+          </div>
         </div>
-        <div className="row wrap">
+
+        {/* Dynamic content based on lesson type */}
+        {lesson.type === 'quiz' ? (
+          <QuizView
+            quizId={lesson.id}
+            isCompleted={isDone}
+            onComplete={() => mark(true)}
+          />
+        ) : lesson.type === 'challenge' ? (
+          <CodingWorkbench
+            problemId={lesson.id}
+            isCompleted={isDone}
+            onComplete={() => mark(true)}
+          />
+        ) : (
+          <div className="player">
+            <iframe
+              title={lesson.title}
+              src={`https://www.youtube.com/embed/${lesson.youtubeId}`}
+              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture"
+              allowFullScreen
+            />
+          </div>
+        )}
+
+        {/* Global Navigation and Mark Complete Bar */}
+        <div className="learn-footer-nav row wrap">
           <button className={`btn ${isDone ? 'ghost' : 'primary'}`} onClick={() => mark(!isDone)}>
             {isDone ? 'Mark as incomplete' : next ? 'Complete & continue' : 'Complete course'}
           </button>
           {prev && (
             <button className="btn ghost" onClick={() => go(`/course/${course.id}/learn/${prev.id}`)}>
-              Previous
+              ← Previous Unit
             </button>
           )}
           {next && (
             <button className="btn ghost" onClick={() => go(`/course/${course.id}/learn/${next.id}`)}>
-              Next lesson
+              Next Unit →
             </button>
           )}
           {complete && (
             <button className="btn gold" onClick={() => go(`/course/${course.id}/certificate`)}>
-              Get certificate
+              🎓 Get certificate
             </button>
           )}
         </div>
@@ -407,6 +538,7 @@ function CertificatePage({ courseId }: { courseId: string }) {
   })
 
   function issue() {
+    if (!course) return
     const trimmed = name.trim()
     if (!trimmed) {
       setError('Enter the name that should appear on the certificate.')
@@ -428,8 +560,8 @@ function CertificatePage({ courseId }: { courseId: string }) {
         <div className="empty-card">
           <h1>Finish the course first</h1>
           <p>
-            You have completed {done} of {lessons.length} lessons. Mark every lesson complete to
-            unlock the PDF certificate.
+            You have completed {done} of {lessons.length} units (videos, quizzes, and coding challenges).
+            Mark every unit complete to unlock your PDF certificate.
           </p>
           <button className="btn primary" onClick={() => go(`/course/${course.id}`)}>
             Return to course
